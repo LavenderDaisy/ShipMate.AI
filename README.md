@@ -144,6 +144,20 @@ ShipMate.AI/
 
 ---
 
+## Design patterns
+
+| Pattern | Where | Why |
+|---|---|---|
+| **Strategy** | `ICarrierRateEngine` → `MockCarrierRateEngine` / `EasyPostRateEngine` | Swap mock vs. live carrier rating at runtime via config; the AI layer never changes. |
+| **Command** | `Plugins/*Plugin.cs` (`[KernelFunction]`) | Each carrier operation is encapsulated as a self-describing tool the LLM can invoke. |
+| **Facade** | `RatingService`, `ShippingService` | A single entry point hides fan-out across carriers and result aggregation/sorting. |
+| **Repository** | `ShipmentStore` | Abstracts shipment persistence (in-memory now, MongoDB later) behind `Add`/`TryGet`. |
+| **Adapter** | `EasyPostRateParser` (JSON → `RateQuote`, `MapServiceLevel`) | Translates EasyPost's external shape into the internal rate model. |
+| **Humble Object** | `EasyPostRateParser` split from `EasyPostRateEngine` | Pure parsing logic is isolated from HTTP so it is unit-testable without network/keys. |
+| **Dependency Injection** | constructor injection wired in `Program.cs` | Services/plugins receive collaborators, enabling stubbing in tests. |
+
+---
+
 ## Getting started
 
 ### Prerequisites
