@@ -24,7 +24,9 @@ booking, and tracking — to fulfil the request.
   (DeepSeek / Qwen / Zhipu), or local **Ollama** — selectable via configuration.
 - **Carrier-agnostic abstraction** — `ICarrierRateEngine` mirrors the real
   StarShip `CarrierEngine` rate-transaction dispatch pattern, so production carrier
-  integrations drop in cleanly.
+  integrations drop in cleanly. Ships with both a live **EasyPost** engine and a mock.
+- **Tested** — NUnit suite covers rate parsing/de-duplication, ZPL generation, and
+  rate aggregation, running fully offline against captured samples.
 - **Secure config** — API keys via .NET user-secrets, never committed to source.
 
 ---
@@ -100,24 +102,30 @@ sequenceDiagram
 ShipMate.AI/
 ├─ ShipMate.AI.slnx
 ├─ NuGet.config                      # nuget.org only (standalone)
-└─ src/ShipMate.AI.Console/
-   ├─ Program.cs                      # host: config, kernel, provider switch, chat loop
-   ├─ appsettings.json                # Provider + backend settings
-   ├─ Carriers/                       # carrier integration layer (mock, swappable)
-   │  ├─ ICarrierRateEngine.cs        # rate-engine contract (mirrors CarrierEngine)
-   │  ├─ MockCarrierRateEngine.cs     # deterministic stand-in rate engine
-   │  ├─ RateModels.cs                # RateRequest / RateQuote / ServiceLevel
-   │  ├─ RatingService.cs             # fans rate requests across carriers
-   │  ├─ ShipmentModels.cs            # ShipmentRequest / Result / TrackingInfo
-   │  ├─ ShipmentStore.cs             # in-memory shipment store (Ship↔Track bridge)
-   │  ├─ ShippingService.cs           # create shipment + synthesize tracking
-   │  ├─ LabelModels.cs               # LabelFormat / LabelResult
-   │  └─ LabelService.cs              # render 4x6 ZPL label from a shipment
-   └─ Plugins/                        # Semantic Kernel tools exposed to the LLM
-      ├─ RatePlugin.cs                # get_shipping_rates
-      ├─ ShipPlugin.cs                # create_shipment
-      ├─ TrackPlugin.cs               # track_shipment
-      └─ LabelPrintPlugin.cs          # render_label (4x6 ZPL)
+├─ src/ShipMate.AI.Console/
+│  ├─ Program.cs                      # host: config, kernel, provider switch, chat loop
+│  ├─ appsettings.json                # Provider + backend settings
+│  ├─ Carriers/                       # carrier integration layer (swappable)
+│  │  ├─ ICarrierRateEngine.cs        # rate-engine contract (mirrors CarrierEngine)
+│  │  ├─ MockCarrierRateEngine.cs     # deterministic stand-in rate engine
+│  │  ├─ EasyPostRateEngine.cs        # live multi-carrier rates via EasyPost API
+│  │  ├─ EasyPostRateParser.cs        # pure JSON→RateQuote mapping (unit tested)
+│  │  ├─ RateModels.cs                # RateRequest / RateQuote / ServiceLevel
+│  │  ├─ RatingService.cs             # fans rate requests across carriers
+│  │  ├─ ShipmentModels.cs            # ShipmentRequest / Result / TrackingInfo
+│  │  ├─ ShipmentStore.cs             # in-memory shipment store (Ship↔Track bridge)
+│  │  ├─ ShippingService.cs           # create shipment + synthesize tracking
+│  │  ├─ LabelModels.cs               # LabelFormat / LabelResult
+│  │  └─ LabelService.cs              # render 4x6 ZPL label from a shipment
+│  └─ Plugins/                        # Semantic Kernel tools exposed to the LLM
+│     ├─ RatePlugin.cs                # get_shipping_rates
+│     ├─ ShipPlugin.cs                # create_shipment
+│     ├─ TrackPlugin.cs               # track_shipment
+│     └─ LabelPrintPlugin.cs          # render_label (4x6 ZPL)
+└─ tests/ShipMate.AI.Tests/           # NUnit test suite
+   ├─ EasyPostRateParserTests.cs      # parse / dedupe / tier mapping
+   ├─ LabelServiceTests.cs            # ZPL structure + file output
+   └─ RatingServiceTests.cs           # aggregation + cheapest-first sorting
 ```
 
 ---
@@ -129,8 +137,10 @@ ShipMate.AI/
 | Runtime | .NET 8 |
 | AI orchestration | Microsoft Semantic Kernel |
 | LLM backends | Azure OpenAI · OpenAI · OpenAI-compatible (DeepSeek/Qwen/Zhipu) · Ollama |
+| Carrier rates | EasyPost API (live, multi-carrier) with mock fallback |
 | Capability | LLM function calling, multi-step tool orchestration |
 | Config / secrets | Microsoft.Extensions.Configuration + user-secrets |
+| Testing | NUnit 4 (20 tests, no API key required) |
 
 ---
 
@@ -189,22 +199,50 @@ exit
 A generated label is written to `bin/.../labels/label_<tracking>.zpl` and can be
 previewed in any online ZPL viewer (e.g. Labelary) or sent to a thermal printer.
 
+### Label preview
+
+The `render_label` tool emits standard 4x6 inch ZPL at 203 dpi with a Code128 tracking
+barcode. Paste the generated `.zpl` into the [Labelary viewer](https://labelary.com/viewer.html)
+to render it, or use their API:
+
+```powershell
+# Render a saved label to PNG via the Labelary API
+$zpl = Get-Content .\bin\Debug\net8.0\labels\label_<tracking>.zpl -Raw
+Invoke-WebRequest -Uri "https://api.labelary.com/v1/printers/8dpmm/labels/4x6/0/" `
+  -Method Post -Body $zpl -OutFile docs/label-preview.png
+```
+
+<!-- Add a rendered screenshot here once captured: -->
+![ShipMate AI 4x6 ZPL label preview](docs/label-preview.png)
+
 ---
 
 ## Notes & limitations
 
-- Carrier data is **mocked** (`MockCarrierRateEngine`) so the AI pipeline runs end-to-end
-  with no carrier credentials or cost. The `ICarrierRateEngine` seam is where a real
-  integration (UPS/FedEx REST, EasyPost, Shippo) plugs in.
+- Carrier rates come from the **EasyPost API** when `EasyPost:ApiKey` is set (use a free
+  test key, `EZTK...`); otherwise the app falls back to deterministic **mock** carriers
+  so the AI pipeline still runs end-to-end with no credentials. Both implement the same
+  `ICarrierRateEngine` contract, so the AI layer is unchanged either way.
 - `ShipmentStore` is **in-memory**, scoped to a single run. Persisting to MongoDB is a
   planned next step.
 - Smaller models may occasionally execute only one tool per turn; a brief follow-up
   ("now ship it") nudges the orchestration forward.
 
+## Testing
+
+```powershell
+dotnet test
+```
+
+The NUnit suite runs fully offline — no API key or network access required. EasyPost
+response mapping is tested against captured JSON samples by isolating the pure parsing
+logic (`EasyPostRateParser`) from the HTTP-bound engine.
+
 ## Roadmap
 
-- [ ] Real carrier integration behind `ICarrierRateEngine` (EasyPost / UPS sandbox)
+- [x] Real carrier integration behind `ICarrierRateEngine` (EasyPost)
 - [x] `LabelPrintPlugin` — generate 4x6 ZPL shipping labels
+- [x] Unit test suite (NUnit)
 - [ ] MongoDB persistence for shipments and tracking
 - [ ] RAG knowledge base for carrier rules (prohibited items, international eligibility)
 - [ ] Minimal API + SignalR streaming front end
