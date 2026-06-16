@@ -44,3 +44,7 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 .DS_Store
+
+## Generated demo label output
+labels/
+*.zpl

@@ -44,6 +44,7 @@ flowchart TB
         RP["RatePlugin<br/>get_shipping_rates"]
         SP["ShipPlugin<br/>create_shipment"]
         TP["TrackPlugin<br/>track_shipment"]
+        LP["LabelPrintPlugin<br/>render_label"]
     end
 
     subgraph Carriers["Carrier Integration Layer"]
@@ -58,9 +59,11 @@ flowchart TB
     SK --> RP
     SK --> SP
     SK --> TP
+    SK --> LP
     RP --> RS
     SP --> SS
     TP --> SS
+    LP --> STORE
     RS --> CE
     SS --> RS
     SS --> STORE
@@ -107,11 +110,14 @@ ShipMate.AI/
    │  ├─ RatingService.cs             # fans rate requests across carriers
    │  ├─ ShipmentModels.cs            # ShipmentRequest / Result / TrackingInfo
    │  ├─ ShipmentStore.cs             # in-memory shipment store (Ship↔Track bridge)
-   │  └─ ShippingService.cs           # create shipment + synthesize tracking
+   │  ├─ ShippingService.cs           # create shipment + synthesize tracking
+   │  ├─ LabelModels.cs               # LabelFormat / LabelResult
+   │  └─ LabelService.cs              # render 4x6 ZPL label from a shipment
    └─ Plugins/                        # Semantic Kernel tools exposed to the LLM
       ├─ RatePlugin.cs                # get_shipping_rates
       ├─ ShipPlugin.cs                # create_shipment
-      └─ TrackPlugin.cs               # track_shipment
+      ├─ TrackPlugin.cs               # track_shipment
+      └─ LabelPrintPlugin.cs          # render_label (4x6 ZPL)
 ```
 
 ---
@@ -175,10 +181,13 @@ dotnet run --project src/ShipMate.AI.Console
 Then try:
 
 ```
-Find the cheapest overnight from 30301 to 10001 for a 5 lb residential package and ship it.
+Find the cheapest overnight from 30301 to 10001 for a 5 lb residential package, ship it and print the label.
 Where is my package?   (use the tracking number returned above)
 exit
 ```
+
+A generated label is written to `bin/.../labels/label_<tracking>.zpl` and can be
+previewed in any online ZPL viewer (e.g. Labelary) or sent to a thermal printer.
 
 ---
 
@@ -195,7 +204,7 @@ exit
 ## Roadmap
 
 - [ ] Real carrier integration behind `ICarrierRateEngine` (EasyPost / UPS sandbox)
-- [ ] `LabelPrintPlugin` — generate 4x6 ZPL shipping labels
+- [x] `LabelPrintPlugin` — generate 4x6 ZPL shipping labels
 - [ ] MongoDB persistence for shipments and tracking
 - [ ] RAG knowledge base for carrier rules (prohibited items, international eligibility)
 - [ ] Minimal API + SignalR streaming front end

@@ -46,14 +46,17 @@ var ratingService = new RatingService(new ICarrierRateEngine[]
     new MockCarrierRateEngine("USPS",  baseRate: 7.20m, perPound: 1.05m),
 });
 
-// Ship/Track share a store so a tracking number minted by create_shipment can be
-// resolved later by track_shipment within the same session.
+// Ship/Track/Label share a store so a tracking number minted by create_shipment can be
+// resolved later by track_shipment or render_label within the same session.
 var shipmentStore = new ShipmentStore();
 var shippingService = new ShippingService(ratingService, shipmentStore);
+var labelService = new LabelService(shipmentStore,
+    Path.Combine(AppContext.BaseDirectory, "labels"));
 
 builder.Plugins.AddFromObject(new RatePlugin(ratingService), "Rating");
 builder.Plugins.AddFromObject(new ShipPlugin(shippingService), "Shipping");
 builder.Plugins.AddFromObject(new TrackPlugin(shippingService), "Tracking");
+builder.Plugins.AddFromObject(new LabelPrintPlugin(labelService), "Labeling");
 
 var kernel = builder.Build();
 var chat = kernel.GetRequiredService<IChatCompletionService>();
@@ -68,13 +71,15 @@ var settings = new OpenAIPromptExecutionSettings
 var history = new ChatHistory("""
     You are ShipMate, a helpful shipping assistant for a multi-carrier shipping platform.
     You have tools to: look up shipping rates across carriers (get_shipping_rates),
-    book a shipment (create_shipment), and track a shipment (track_shipment).
+    book a shipment (create_shipment), track a shipment (track_shipment), and generate a
+    printable 4x6 ZPL shipping label (render_label).
 
     Orchestrate tools as needed to fully satisfy the request. For example, if the user
-    says "find the cheapest overnight option and ship it", first call get_shipping_rates,
-    pick the cheapest matching option, then call create_shipment with that carrier and
-    service. After booking, give the user the tracking number. When asked where a package
-    is, call track_shipment with the tracking number.
+    says "find the cheapest overnight option, ship it and print the label", first call
+    get_shipping_rates, pick the cheapest matching option, call create_shipment with that
+    carrier and service, then call render_label with the returned tracking number. After
+    booking, give the user the tracking number. When asked where a package is, call
+    track_shipment with the tracking number.
 
     Always state carrier, service, price, transit time, and any tracking number clearly.
     Ask for missing details (origin, destination, weight) only if required to proceed.
@@ -82,7 +87,7 @@ var history = new ChatHistory("""
 
 System.Console.WriteLine("ShipMate AI (M2)  —  type your shipping question, or 'exit' to quit.");
 System.Console.WriteLine($"LLM provider: {provider}");
-System.Console.WriteLine("Try: \"Find the cheapest overnight from 30301 to 10001 for a 5 lb residential package and ship it.\"");
+System.Console.WriteLine("Try: \"Find the cheapest overnight from 30301 to 10001 for a 5 lb residential package, ship it and print the label.\"");
 System.Console.WriteLine("Then: \"Where is my package?\"");
 System.Console.WriteLine();
 
