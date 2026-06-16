@@ -38,13 +38,29 @@ catch (ConfigurationMissingException ex)
     return;
 }
 
-// --- Wire up the (mock) carrier rating layer and expose it as a tool -------
-var ratingService = new RatingService(new ICarrierRateEngine[]
+// --- Wire up the carrier rating layer and expose it as a tool --------------
+// If an EasyPost API key is configured, use live multi-carrier rates; otherwise
+// fall back to deterministic built-in mock carriers (no key, no cost).
+var easyPostKey = config["EasyPost:ApiKey"];
+ICarrierRateEngine[] rateEngines;
+
+if (!string.IsNullOrWhiteSpace(easyPostKey))
 {
-    new MockCarrierRateEngine("UPS",   baseRate: 8.50m, perPound: 0.85m),
-    new MockCarrierRateEngine("FedEx", baseRate: 9.10m, perPound: 0.78m),
-    new MockCarrierRateEngine("USPS",  baseRate: 7.20m, perPound: 1.05m),
-});
+    rateEngines = new ICarrierRateEngine[] { new EasyPostRateEngine(easyPostKey) };
+    System.Console.WriteLine("Carrier rates: EasyPost (live)");
+}
+else
+{
+    rateEngines = new ICarrierRateEngine[]
+    {
+        new MockCarrierRateEngine("UPS",   baseRate: 8.50m, perPound: 0.85m),
+        new MockCarrierRateEngine("FedEx", baseRate: 9.10m, perPound: 0.78m),
+        new MockCarrierRateEngine("USPS",  baseRate: 7.20m, perPound: 1.05m),
+    };
+    System.Console.WriteLine("Carrier rates: built-in mock (set EasyPost:ApiKey for live rates)");
+}
+
+var ratingService = new RatingService(rateEngines);
 
 // Ship/Track/Label share a store so a tracking number minted by create_shipment can be
 // resolved later by track_shipment or render_label within the same session.

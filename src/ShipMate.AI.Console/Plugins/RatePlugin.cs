@@ -64,7 +64,10 @@ public sealed class RatePlugin
                       + (request.Residential ? " (residential):" : ":"));
         foreach (var q in quotes)
         {
-            sb.AppendLine($"- {q.Carrier} {q.ServiceLevel}: {q.TotalCharge:C} {q.Currency}, {q.TransitDays} day(s)");
+            var service = string.IsNullOrEmpty(q.ServiceName)
+                ? q.ServiceLevel.ToString()
+                : $"{q.ServiceName} ({q.ServiceLevel})";
+            sb.AppendLine($"- {q.Carrier} {service}: {q.TotalCharge:C} {q.Currency}, {q.TransitDays} day(s)");
         }
 
         return sb.ToString().TrimEnd();

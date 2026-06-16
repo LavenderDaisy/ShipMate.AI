@@ -34,4 +34,10 @@ public sealed record RateQuote
     public required decimal TotalCharge { get; init; }
     public required int TransitDays { get; init; }
     public required string Currency { get; init; } = "USD";
+
+    /// <summary>
+    /// The carrier's specific service name when available (e.g. "Priority",
+    /// "GroundAdvantage", "Express"). Null for engines that only expose coarse tiers.
+    /// </summary>
+    public string? ServiceName { get; init; }
 }
