@@ -25,8 +25,10 @@ booking, and tracking — to fulfil the request.
 - **Carrier-agnostic abstraction** — `ICarrierRateEngine` mirrors the real
   StarShip `CarrierEngine` rate-transaction dispatch pattern, so production carrier
   integrations drop in cleanly. Ships with both a live **EasyPost** engine and a mock.
-- **Tested** — NUnit suite covers rate parsing/de-duplication, ZPL generation, and
-  rate aggregation, running fully offline against captured samples.
+- **Tested** — NUnit suite covers rate parsing/de-duplication, ZPL generation, rate
+  aggregation, and ZPL printing, running fully offline against captured samples.
+- **Real label printing** — sends 4x6 ZPL to a label printer via the Windows print
+  spooler (raw) or TCP 9100, and can buy a real carrier label from EasyPost.
 - **Secure config** — API keys via .NET user-secrets, never committed to source.
 
 ---
@@ -47,6 +49,7 @@ flowchart TB
         SP["ShipPlugin<br/>create_shipment"]
         TP["TrackPlugin<br/>track_shipment"]
         LP["LabelPrintPlugin<br/>render_label"]
+        PP["PrintLabelPlugin<br/>print_label / buy_and_print_carrier_label"]
     end
 
     subgraph Carriers["Carrier Integration Layer"]
@@ -54,6 +57,13 @@ flowchart TB
         SS["ShippingService"]
         STORE["ShipmentStore"]
         CE["MockCarrierRateEngine x3<br/>UPS / FedEx / USPS"]
+        EP["EasyPostRateEngine / LabelService<br/>(live)"]
+    end
+
+    subgraph Print["Printing Layer"]
+        ZP["IZplPrinter"]
+        WIN["WindowsRawZplPrinter<br/>(spooler RAW)"]
+        TCP["TcpZplPrinter<br/>(port 9100)"]
     end
 
     U --> SK
@@ -62,10 +72,15 @@ flowchart TB
     SK --> SP
     SK --> TP
     SK --> LP
+    SK --> PP
     RP --> RS
     SP --> SS
     TP --> SS
     LP --> STORE
+    PP --> ZP
+    PP --> EP
+    ZP --> WIN
+    ZP --> TCP
     RS --> CE
     SS --> RS
     SS --> STORE
@@ -115,17 +130,27 @@ ShipMate.AI/
 │  │  ├─ ShipmentModels.cs            # ShipmentRequest / Result / TrackingInfo
 │  │  ├─ ShipmentStore.cs             # in-memory shipment store (Ship↔Track bridge)
 │  │  ├─ ShippingService.cs           # create shipment + synthesize tracking
+│  │  ├─ EasyPostLabelService.cs      # buy a real carrier label (ZPL) via EasyPost
 │  │  ├─ LabelModels.cs               # LabelFormat / LabelResult
 │  │  └─ LabelService.cs              # render 4x6 ZPL label from a shipment
+│  ├─ Printing/                       # ZPL printer transports
+│  │  ├─ IZplPrinter.cs               # printer contract + PrintResult
+│  │  ├─ WindowsRawZplPrinter.cs      # raw spooler print via winspool P/Invoke
+│  │  ├─ TcpZplPrinter.cs             # network print to host:9100
+│  │  └─ NullZplPrinter.cs            # no-op (Null Object) when unconfigured
 │  └─ Plugins/                        # Semantic Kernel tools exposed to the LLM
 │     ├─ RatePlugin.cs                # get_shipping_rates
 │     ├─ ShipPlugin.cs                # create_shipment
 │     ├─ TrackPlugin.cs               # track_shipment
-│     └─ LabelPrintPlugin.cs          # render_label (4x6 ZPL)
-└─ tests/ShipMate.AI.Tests/           # NUnit test suite
+│     ├─ LabelPrintPlugin.cs          # render_label (4x6 ZPL)
+│     └─ PrintLabelPlugin.cs          # print_label / buy_and_print_carrier_label
+└─ tests/ShipMate.AI.Tests/           # NUnit test suite (29 tests)
    ├─ EasyPostRateParserTests.cs      # parse / dedupe / tier mapping
    ├─ LabelServiceTests.cs            # ZPL structure + file output
-   └─ RatingServiceTests.cs           # aggregation + cheapest-first sorting
+   ├─ RatingServiceTests.cs           # aggregation + cheapest-first sorting
+   ├─ NullZplPrinterTests.cs          # no-op printer behavior
+   ├─ TcpZplPrinterTests.cs           # real loopback socket + failure path
+   └─ PrintLabelPluginTests.cs        # print orchestration via fake printer
 ```
 
 ---
@@ -138,9 +163,10 @@ ShipMate.AI/
 | AI orchestration | Microsoft Semantic Kernel |
 | LLM backends | Azure OpenAI · OpenAI · OpenAI-compatible (DeepSeek/Qwen/Zhipu) · Ollama |
 | Carrier rates | EasyPost API (live, multi-carrier) with mock fallback |
+| Label printing | ZPL via Windows print spooler (raw) or TCP 9100 |
 | Capability | LLM function calling, multi-step tool orchestration |
 | Config / secrets | Microsoft.Extensions.Configuration + user-secrets |
-| Testing | NUnit 4 (20 tests, no API key required) |
+| Testing | NUnit 4 (29 tests, no API key required) |
 
 ---
 
@@ -154,6 +180,7 @@ ShipMate.AI/
 | **Repository** | `ShipmentStore` | Abstracts shipment persistence (in-memory now, MongoDB later) behind `Add`/`TryGet`. |
 | **Adapter** | `EasyPostRateParser` (JSON → `RateQuote`, `MapServiceLevel`) | Translates EasyPost's external shape into the internal rate model. |
 | **Humble Object** | `EasyPostRateParser` split from `EasyPostRateEngine` | Pure parsing logic is isolated from HTTP so it is unit-testable without network/keys. |
+| **Null Object** | `NullZplPrinter` | Stands in when no printer is configured, so callers never branch on null. |
 | **Dependency Injection** | constructor injection wired in `Program.cs` | Services/plugins receive collaborators, enabling stubbing in tests. |
 
 ---
@@ -229,6 +256,34 @@ Invoke-WebRequest -Uri "https://api.labelary.com/v1/printers/8dpmm/labels/4x6/0/
 <!-- Add a rendered screenshot here once captured: -->
 ![ShipMate AI 4x6 ZPL label preview](docs/label-preview.png)
 
+### Printing to a label printer
+
+Two tools send ZPL to a real printer:
+
+- `print_label` — prints the self-rendered demo label for a booked shipment.
+- `buy_and_print_carrier_label` — buys a **real** carrier label from EasyPost (requesting
+  `label_format=ZPL`) and prints its ZPL. Requires `EasyPost:ApiKey`.
+
+Configure the printer in `appsettings.json` (or user-secrets):
+
+```jsonc
+"Printer": {
+  "Type": "Windows",   // Windows | Tcp | None
+  "Name": "4X6Virtual", // Windows printer name (Type=Windows)
+  "Host": "",           // printer IP (Type=Tcp)
+  "Port": 9100
+}
+```
+
+- **Windows** — sends raw bytes through the print spooler (`winspool.drv` P/Invoke) with
+  the `RAW` data type, so the printer interprets ZPL directly instead of rendering text.
+- **Tcp** — opens a socket to `Host:Port` (9100 is the standard raw/JetDirect port) and
+  streams the ZPL, for network label printers.
+- **None** — no physical printing; labels are still written to the `labels/` folder.
+
+> Tip: a free "Generic / Text Only" Windows printer on port 9100 works as a virtual ZPL
+> sink for testing the spooler path end to end.
+
 ---
 
 ## Notes & limitations
@@ -237,6 +292,8 @@ Invoke-WebRequest -Uri "https://api.labelary.com/v1/printers/8dpmm/labels/4x6/0/
   test key, `EZTK...`); otherwise the app falls back to deterministic **mock** carriers
   so the AI pipeline still runs end-to-end with no credentials. Both implement the same
   `ICarrierRateEngine` contract, so the AI layer is unchanged either way.
+- Buying a real label downloads it from EasyPost's public CDN; on networks that block
+  that CDN the shipment is still purchased and the label URL is returned for manual fetch.
 - `ShipmentStore` is **in-memory**, scoped to a single run. Persisting to MongoDB is a
   planned next step.
 - Smaller models may occasionally execute only one tool per turn; a brief follow-up
@@ -250,12 +307,14 @@ dotnet test
 
 The NUnit suite runs fully offline — no API key or network access required. EasyPost
 response mapping is tested against captured JSON samples by isolating the pure parsing
-logic (`EasyPostRateParser`) from the HTTP-bound engine.
+logic (`EasyPostRateParser`) from the HTTP-bound engine. Printing is verified with a fake
+printer and a real loopback socket (`TcpZplPrinter`), so no physical printer is needed.
 
 ## Roadmap
 
 - [x] Real carrier integration behind `ICarrierRateEngine` (EasyPost)
 - [x] `LabelPrintPlugin` — generate 4x6 ZPL shipping labels
+- [x] ZPL printing (Windows spooler / TCP 9100) + real EasyPost label buying
 - [x] Unit test suite (NUnit)
 - [ ] MongoDB persistence for shipments and tracking
 - [ ] RAG knowledge base for carrier rules (prohibited items, international eligibility)
