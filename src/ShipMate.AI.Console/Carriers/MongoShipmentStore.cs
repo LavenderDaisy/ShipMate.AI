@@ -16,8 +16,17 @@ public sealed class MongoShipmentStore : IShipmentStore
 
     public MongoShipmentStore(string connectionString, string database = "shipmate", string collection = "shipments")
     {
-        var client = new MongoClient(connectionString);
-        _collection = client.GetDatabase(database).GetCollection<ShipmentDocument>(collection);
+        // Fail fast if the server is unreachable: MongoClient connects lazily, so without
+        // a short server-selection timeout an unreachable server would only surface as a
+        // hang on the first operation. A ping here lets the caller fall back cleanly.
+        var settings = MongoClientSettings.FromConnectionString(connectionString);
+        settings.ServerSelectionTimeout = TimeSpan.FromSeconds(3);
+
+        var client = new MongoClient(settings);
+        var db = client.GetDatabase(database);
+        db.RunCommand<BsonDocument>(new BsonDocument("ping", 1));
+
+        _collection = db.GetCollection<ShipmentDocument>(collection);
     }
 
     public void Add(ShipmentResult shipment)
