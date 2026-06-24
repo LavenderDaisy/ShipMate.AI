@@ -6,6 +6,7 @@ using Microsoft.SemanticKernel.Connectors.OpenAI;
 using OpenAI;
 using ShipMate.AI.Console.Carriers;
 using ShipMate.AI.Console.Plugins;
+using ShipMate.AI.Console.Printing;
 
 // ---------------------------------------------------------------------------
 // ShipMate AI — M1: Conversational shipping-rate copilot.
@@ -69,10 +70,22 @@ var shippingService = new ShippingService(ratingService, shipmentStore);
 var labelService = new LabelService(shipmentStore,
     Path.Combine(AppContext.BaseDirectory, "labels"));
 
+// Configure the ZPL printer destination and (optionally) real EasyPost label buying.
+var printer = CreatePrinter(config);
+System.Console.WriteLine($"Label printer: {printer.Destination}");
+
+EasyPostLabelService? easyPostLabel = !string.IsNullOrWhiteSpace(easyPostKey)
+    ? new EasyPostLabelService(easyPostKey)
+    : null;
+
+var labelsDir = Path.Combine(AppContext.BaseDirectory, "labels");
+
 builder.Plugins.AddFromObject(new RatePlugin(ratingService), "Rating");
 builder.Plugins.AddFromObject(new ShipPlugin(shippingService), "Shipping");
 builder.Plugins.AddFromObject(new TrackPlugin(shippingService), "Tracking");
 builder.Plugins.AddFromObject(new LabelPrintPlugin(labelService), "Labeling");
+builder.Plugins.AddFromObject(
+    new PrintLabelPlugin(labelService, printer, labelsDir, easyPostLabel), "Printing");
 
 var kernel = builder.Build();
 var chat = kernel.GetRequiredService<IChatCompletionService>();
@@ -87,15 +100,17 @@ var settings = new OpenAIPromptExecutionSettings
 var history = new ChatHistory("""
     You are ShipMate, a helpful shipping assistant for a multi-carrier shipping platform.
     You have tools to: look up shipping rates across carriers (get_shipping_rates),
-    book a shipment (create_shipment), track a shipment (track_shipment), and generate a
-    printable 4x6 ZPL shipping label (render_label).
+    book a shipment (create_shipment), track a shipment (track_shipment), generate a
+    printable 4x6 ZPL shipping label (render_label), send a booked shipment's label to the
+    label printer (print_label), and buy and print a REAL carrier label (buy_and_print_carrier_label).
 
     Orchestrate tools as needed to fully satisfy the request. For example, if the user
     says "find the cheapest overnight option, ship it and print the label", first call
     get_shipping_rates, pick the cheapest matching option, call create_shipment with that
-    carrier and service, then call render_label with the returned tracking number. After
+    carrier and service, then call print_label with the returned tracking number. After
     booking, give the user the tracking number. When asked where a package is, call
-    track_shipment with the tracking number.
+    track_shipment with the tracking number. Use buy_and_print_carrier_label only when the
+    user explicitly wants a real/actual carrier label rather than the demo label.
 
     Always state carrier, service, price, transit time, and any tracking number clearly.
     Ask for missing details (origin, destination, weight) only if required to proceed.
@@ -141,6 +156,36 @@ while (true)
 // ---------------------------------------------------------------------------
 // Provider configuration
 // ---------------------------------------------------------------------------
+
+static IZplPrinter CreatePrinter(IConfiguration config)
+{
+    var type = (config["Printer:Type"] ?? "None").Trim();
+
+    switch (type.ToLowerInvariant())
+    {
+        case "windows":
+            var name = config["Printer:Name"];
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                System.Console.WriteLine("Printer:Type is Windows but Printer:Name is empty; printing disabled.");
+                return new NullZplPrinter();
+            }
+            return new WindowsRawZplPrinter(name);
+
+        case "tcp":
+            var host = config["Printer:Host"];
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                System.Console.WriteLine("Printer:Type is Tcp but Printer:Host is empty; printing disabled.");
+                return new NullZplPrinter();
+            }
+            var port = int.TryParse(config["Printer:Port"], out var p) ? p : 9100;
+            return new TcpZplPrinter(host, port);
+
+        default:
+            return new NullZplPrinter();
+    }
+}
 
 static void ConfigureChatProvider(IKernelBuilder builder, string provider, IConfiguration config)
 {
