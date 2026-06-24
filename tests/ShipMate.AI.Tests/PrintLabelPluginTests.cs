@@ -37,14 +37,14 @@ public class PrintLabelPluginTests
     }
 
     private string _outputDir = null!;
-    private ShipmentStore _store = null!;
+    private IShipmentStore _store = null!;
     private LabelService _labelService = null!;
 
     [SetUp]
     public void SetUp()
     {
         _outputDir = Path.Combine(Path.GetTempPath(), "shipmate-tests", Guid.NewGuid().ToString("N"));
-        _store = new ShipmentStore();
+        _store = new InMemoryShipmentStore();
         _labelService = new LabelService(_store, _outputDir);
 
         _store.Add(new ShipmentResult

@@ -16,10 +16,10 @@ public sealed class LabelService
     private const int HeightInches = 6;
     private const int WidthDots = WidthInches * Dpi;   // 812
 
-    private readonly ShipmentStore _store;
+    private readonly IShipmentStore _store;
     private readonly string _outputDirectory;
 
-    public LabelService(ShipmentStore store, string outputDirectory)
+    public LabelService(IShipmentStore store, string outputDirectory)
     {
         _store = store;
         _outputDirectory = outputDirectory;

@@ -10,9 +10,9 @@ namespace ShipMate.AI.Console.Carriers;
 public sealed class ShippingService
 {
     private readonly RatingService _ratingService;
-    private readonly ShipmentStore _store;
+    private readonly IShipmentStore _store;
 
-    public ShippingService(RatingService ratingService, ShipmentStore store)
+    public ShippingService(RatingService ratingService, IShipmentStore store)
     {
         _ratingService = ratingService;
         _store = store;

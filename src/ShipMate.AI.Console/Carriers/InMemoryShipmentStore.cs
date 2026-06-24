@@ -3,12 +3,11 @@ using System.Collections.Concurrent;
 namespace ShipMate.AI.Console.Carriers;
 
 /// <summary>
-/// In-memory store of created shipments keyed by tracking number. This is the bridge
-/// that lets the Track tool find shipments the Ship tool created during the same
-/// session, which is what makes multi-step tool orchestration observable. In a real
-/// system this would be MongoDB (M2 of the roadmap) or the carrier's own tracking API.
+/// In-memory <see cref="IShipmentStore"/> backed by a thread-safe dictionary. Scoped to a
+/// single run; used by default when no durable store (MongoDB) is configured. Keeps the
+/// app fully runnable with zero external dependencies.
 /// </summary>
-public sealed class ShipmentStore
+public sealed class InMemoryShipmentStore : IShipmentStore
 {
     private readonly ConcurrentDictionary<string, ShipmentResult> _shipments = new();
 

@@ -64,8 +64,9 @@ else
 var ratingService = new RatingService(rateEngines);
 
 // Ship/Track/Label share a store so a tracking number minted by create_shipment can be
-// resolved later by track_shipment or render_label within the same session.
-var shipmentStore = new ShipmentStore();
+// resolved later by track_shipment or render_label. Use MongoDB when configured for
+// durable, cross-run persistence; otherwise an in-memory store (per session).
+IShipmentStore shipmentStore = CreateShipmentStore(config);
 var shippingService = new ShippingService(ratingService, shipmentStore);
 var labelService = new LabelService(shipmentStore,
     Path.Combine(AppContext.BaseDirectory, "labels"));
@@ -127,6 +128,12 @@ while (true)
     System.Console.Write("You> ");
     var input = System.Console.ReadLine();
 
+    // Null means stdin reached end-of-input (e.g. piped/redirected input); exit cleanly.
+    if (input is null)
+    {
+        break;
+    }
+
     if (string.IsNullOrWhiteSpace(input))
     {
         continue;
@@ -156,6 +163,29 @@ while (true)
 // ---------------------------------------------------------------------------
 // Provider configuration
 // ---------------------------------------------------------------------------
+
+static IShipmentStore CreateShipmentStore(IConfiguration config)
+{
+    var connectionString = config["Mongo:ConnectionString"];
+    if (string.IsNullOrWhiteSpace(connectionString))
+    {
+        System.Console.WriteLine("Shipment store: in-memory (set Mongo:ConnectionString for durable storage)");
+        return new InMemoryShipmentStore();
+    }
+
+    var database = config["Mongo:Database"] ?? "shipmate";
+    try
+    {
+        var store = new MongoShipmentStore(connectionString, database);
+        System.Console.WriteLine($"Shipment store: MongoDB (database '{database}')");
+        return store;
+    }
+    catch (Exception ex)
+    {
+        System.Console.WriteLine($"Shipment store: MongoDB init failed ({ex.Message}); falling back to in-memory.");
+        return new InMemoryShipmentStore();
+    }
+}
 
 static IZplPrinter CreatePrinter(IConfiguration config)
 {
