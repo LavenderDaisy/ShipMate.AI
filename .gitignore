@@ -48,3 +48,9 @@ Desktop.ini
 ## Generated demo label output
 labels/
 *.zpl
+
+## Node.js (if any tooling is added later)
+node_modules/
+
+## Misc
+*.txt

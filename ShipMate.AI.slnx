@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/ShipMate.AI.Api/ShipMate.AI.Api.csproj" />
     <Project Path="src/ShipMate.AI.Console/ShipMate.AI.Console.csproj" />
   </Folder>
   <Folder Name="/tests/">

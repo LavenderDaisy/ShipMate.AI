@@ -19,8 +19,11 @@ public sealed class MongoShipmentStore : IShipmentStore
         // Fail fast if the server is unreachable: MongoClient connects lazily, so without
         // a short server-selection timeout an unreachable server would only surface as a
         // hang on the first operation. A ping here lets the caller fall back cleanly.
+        // Note: some corporate DNS servers struggle with Atlas SRV records, so we give
+        // a generous timeout here.
         var settings = MongoClientSettings.FromConnectionString(connectionString);
-        settings.ServerSelectionTimeout = TimeSpan.FromSeconds(3);
+        settings.ServerSelectionTimeout = TimeSpan.FromSeconds(15);
+        settings.ConnectTimeout = TimeSpan.FromSeconds(10);
 
         var client = new MongoClient(settings);
         var db = client.GetDatabase(database);

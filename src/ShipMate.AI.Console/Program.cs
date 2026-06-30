@@ -67,6 +67,31 @@ var ratingService = new RatingService(rateEngines);
 // resolved later by track_shipment or render_label. Use MongoDB when configured for
 // durable, cross-run persistence; otherwise an in-memory store (per session).
 IShipmentStore shipmentStore = CreateShipmentStore(config);
+
+// --dump: print all stored shipments and exit. Useful for checking MongoDB contents
+// without installing Compass. Usage: dotnet run -- --dump
+if (args is { Length: > 0 } && args[0] is "--dump" or "--list")
+{
+    var all = shipmentStore.All;
+    if (all.Count == 0)
+    {
+        System.Console.WriteLine("No shipments in store.");
+    }
+    else
+    {
+        System.Console.WriteLine($"\n=== {all.Count} shipment(s) in store ===\n");
+        foreach (var s in all)
+        {
+            System.Console.WriteLine($"  Tracking#: {s.TrackingNumber}");
+            System.Console.WriteLine($"  Carrier:   {s.Carrier} ({s.ServiceLevel})");
+            System.Console.WriteLine($"  Charge:    {s.TotalCharge:C} {s.Currency}");
+            System.Console.WriteLine($"  Est. delivery: {s.EstimatedDelivery:yyyy-MM-dd}");
+            System.Console.WriteLine();
+        }
+    }
+    return;
+}
+
 var shippingService = new ShippingService(ratingService, shipmentStore);
 var labelService = new LabelService(shipmentStore,
     Path.Combine(AppContext.BaseDirectory, "labels"));
