@@ -117,8 +117,9 @@ sequenceDiagram
 ShipMate.AI/
 ├─ ShipMate.AI.slnx
 ├─ NuGet.config                      # nuget.org only (standalone)
-├─ src/ShipMate.AI.Console/
-│  ├─ Program.cs                      # host: config, kernel, provider switch, chat loop
+├─ src/ShipMate.AI.Console/           # console host + shared domain logic
+│  ├─ Program.cs                      # console host: config, chat loop, --dump
+│  ├─ ShipMateKernelFactory.cs        # shared kernel/service assembly (used by both hosts)
 │  ├─ appsettings.json                # Provider + backend settings
 │  ├─ Carriers/                       # carrier integration layer (swappable)
 │  │  ├─ ICarrierRateEngine.cs        # rate-engine contract (mirrors CarrierEngine)
@@ -128,7 +129,9 @@ ShipMate.AI/
 │  │  ├─ RateModels.cs                # RateRequest / RateQuote / ServiceLevel
 │  │  ├─ RatingService.cs             # fans rate requests across carriers
 │  │  ├─ ShipmentModels.cs            # ShipmentRequest / Result / TrackingInfo
-│  │  ├─ ShipmentStore.cs             # in-memory shipment store (Ship↔Track bridge)
+│  │  ├─ IShipmentStore.cs            # shipment store contract
+│  │  ├─ InMemoryShipmentStore.cs     # per-session in-memory store
+│  │  ├─ MongoShipmentStore.cs        # durable MongoDB store (Atlas)
 │  │  ├─ ShippingService.cs           # create shipment + synthesize tracking
 │  │  ├─ EasyPostLabelService.cs      # buy a real carrier label (ZPL) via EasyPost
 │  │  ├─ LabelModels.cs               # LabelFormat / LabelResult
@@ -144,10 +147,14 @@ ShipMate.AI/
 │     ├─ TrackPlugin.cs               # track_shipment
 │     ├─ LabelPrintPlugin.cs          # render_label (4x6 ZPL)
 │     └─ PrintLabelPlugin.cs          # print_label / buy_and_print_carrier_label
-└─ tests/ShipMate.AI.Tests/           # NUnit test suite (29 tests)
+├─ src/ShipMate.AI.Api/               # ASP.NET Core Minimal API + web chat UI
+│  ├─ Program.cs                      # /api/chat endpoint + serves chat page
+│  └─ ChatModels.cs                   # request/response types + embedded HTML
+└─ tests/ShipMate.AI.Tests/           # NUnit test suite (32 tests)
    ├─ EasyPostRateParserTests.cs      # parse / dedupe / tier mapping
    ├─ LabelServiceTests.cs            # ZPL structure + file output
    ├─ RatingServiceTests.cs           # aggregation + cheapest-first sorting
+   ├─ InMemoryShipmentStoreTests.cs   # store add / lookup / upsert
    ├─ NullZplPrinterTests.cs          # no-op printer behavior
    ├─ TcpZplPrinterTests.cs           # real loopback socket + failure path
    └─ PrintLabelPluginTests.cs        # print orchestration via fake printer
@@ -164,9 +171,11 @@ ShipMate.AI/
 | LLM backends | Azure OpenAI · OpenAI · OpenAI-compatible (DeepSeek/Qwen/Zhipu) · Ollama |
 | Carrier rates | EasyPost API (live, multi-carrier) with mock fallback |
 | Label printing | ZPL via Windows print spooler (raw) or TCP 9100 |
+| Persistence | MongoDB Atlas (durable) with in-memory fallback |
+| Web UI | ASP.NET Core Minimal API + embedded chat page |
 | Capability | LLM function calling, multi-step tool orchestration |
 | Config / secrets | Microsoft.Extensions.Configuration + user-secrets |
-| Testing | NUnit 4 (29 tests, no API key required) |
+| Testing | NUnit 4 (32 tests, no API key required) |
 
 ---
 
@@ -177,10 +186,11 @@ ShipMate.AI/
 | **Strategy** | `ICarrierRateEngine` → `MockCarrierRateEngine` / `EasyPostRateEngine` | Swap mock vs. live carrier rating at runtime via config; the AI layer never changes. |
 | **Command** | `Plugins/*Plugin.cs` (`[KernelFunction]`) | Each carrier operation is encapsulated as a self-describing tool the LLM can invoke. |
 | **Facade** | `RatingService`, `ShippingService` | A single entry point hides fan-out across carriers and result aggregation/sorting. |
-| **Repository** | `ShipmentStore` | Abstracts shipment persistence (in-memory now, MongoDB later) behind `Add`/`TryGet`. |
+| **Repository** | `IShipmentStore` → `InMemoryShipmentStore` / `MongoShipmentStore` | Abstracts shipment persistence; swap in-memory vs MongoDB via config. |
 | **Adapter** | `EasyPostRateParser` (JSON → `RateQuote`, `MapServiceLevel`) | Translates EasyPost's external shape into the internal rate model. |
 | **Humble Object** | `EasyPostRateParser` split from `EasyPostRateEngine` | Pure parsing logic is isolated from HTTP so it is unit-testable without network/keys. |
 | **Null Object** | `NullZplPrinter` | Stands in when no printer is configured, so callers never branch on null. |
+| **Factory** | `ShipMateKernelFactory` | Assembles the kernel + all services from config; shared by console and web API hosts. |
 | **Dependency Injection** | constructor injection wired in `Program.cs` | Services/plugins receive collaborators, enabling stubbing in tests. |
 
 ---
@@ -223,7 +233,7 @@ dotnet user-secrets set "Provider" "Ollama"
 # defaults: model qwen2.5/llama3.1, endpoint http://localhost:11434/v1
 ```
 
-### Run
+### Run — console
 
 ```powershell
 dotnet run --project src/ShipMate.AI.Console
@@ -239,6 +249,30 @@ exit
 
 A generated label is written to `bin/.../labels/label_<tracking>.zpl` and can be
 previewed in any online ZPL viewer (e.g. Labelary) or sent to a thermal printer.
+
+### Run — web API + chat UI
+
+```powershell
+dotnet run --project src/ShipMate.AI.Api --urls http://localhost:5099
+```
+
+Open `http://localhost:5099` in a browser. The chat page talks to `POST /api/chat`,
+which uses the same Semantic Kernel, carrier, shipping, label, and printing layers as
+the console host (assembled by the shared `ShipMateKernelFactory`). Each browser session
+gets its own chat history. Quick-example buttons are provided.
+
+### MongoDB persistence (optional)
+
+Set a connection string to persist shipments across runs (e.g. MongoDB Atlas free tier):
+
+```powershell
+cd src/ShipMate.AI.Console
+dotnet user-secrets set "Mongo:ConnectionString" "mongodb+srv://..."
+dotnet user-secrets set "Mongo:Database" "shipmate"
+```
+
+Without a connection string the app uses an in-memory store. If MongoDB is unreachable
+at startup it falls back to in-memory automatically.
 
 ### Label preview
 
@@ -294,8 +328,9 @@ Configure the printer in `appsettings.json` (or user-secrets):
   `ICarrierRateEngine` contract, so the AI layer is unchanged either way.
 - Buying a real label downloads it from EasyPost's public CDN; on networks that block
   that CDN the shipment is still purchased and the label URL is returned for manual fetch.
-- `ShipmentStore` is **in-memory**, scoped to a single run. Persisting to MongoDB is a
-  planned next step.
+- Shipments persist in **MongoDB** when `Mongo:ConnectionString` is set (e.g. Atlas free
+  tier); otherwise an in-memory store is used. If MongoDB is unreachable at startup the
+  app falls back to in-memory so the demo still runs.
 - Smaller models may occasionally execute only one tool per turn; a brief follow-up
   ("now ship it") nudges the orchestration forward.
 
@@ -309,15 +344,16 @@ The NUnit suite runs fully offline — no API key or network access required. Ea
 response mapping is tested against captured JSON samples by isolating the pure parsing
 logic (`EasyPostRateParser`) from the HTTP-bound engine. Printing is verified with a fake
 printer and a real loopback socket (`TcpZplPrinter`), so no physical printer is needed.
+The shipment store contract is tested via `InMemoryShipmentStoreTests`.
 
 ## Roadmap
 
 - [x] Real carrier integration behind `ICarrierRateEngine` (EasyPost)
 - [x] `LabelPrintPlugin` — generate 4x6 ZPL shipping labels
 - [x] ZPL printing (Windows spooler / TCP 9100) + real EasyPost label buying
-- [x] Unit test suite (NUnit)
-- [ ] MongoDB persistence for shipments and tracking
+- [x] MongoDB persistence for shipments and tracking
+- [x] Unit test suite (NUnit, 32 tests)
+- [x] Minimal API + web chat UI
 - [ ] RAG knowledge base for carrier rules (prohibited items, international eligibility)
-- [ ] Minimal API + SignalR streaming front end
 - [ ] OpenTelemetry tracing of token usage and tool-call chains
 ```
