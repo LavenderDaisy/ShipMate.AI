@@ -5,6 +5,7 @@ using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
 using OpenAI;
 using ShipMate.AI.Console.Carriers;
+using ShipMate.AI.Console.Knowledge;
 using ShipMate.AI.Console.Plugins;
 using ShipMate.AI.Console.Printing;
 
@@ -106,12 +107,19 @@ EasyPostLabelService? easyPostLabel = !string.IsNullOrWhiteSpace(easyPostKey)
 
 var labelsDir = Path.Combine(AppContext.BaseDirectory, "labels");
 
+// RAG knowledge base (carrier rules). Uses a real embedding model if RAG:EmbeddingModel
+// is configured, otherwise a deterministic local embedding.
+var embeddings = CreateEmbeddingService(config);
+var vectorSearch = new VectorSearchService(embeddings, CarrierKnowledgeBase.Documents);
+var rewriteQueries = !bool.TryParse(config["RAG:RewriteQueries"], out var rw) || rw;
+
 builder.Plugins.AddFromObject(new RatePlugin(ratingService), "Rating");
 builder.Plugins.AddFromObject(new ShipPlugin(shippingService), "Shipping");
 builder.Plugins.AddFromObject(new TrackPlugin(shippingService), "Tracking");
 builder.Plugins.AddFromObject(new LabelPrintPlugin(labelService), "Labeling");
 builder.Plugins.AddFromObject(
     new PrintLabelPlugin(labelService, printer, labelsDir, easyPostLabel), "Printing");
+builder.Plugins.AddFromObject(new KnowledgePlugin(vectorSearch, rewriteQueries), "Knowledge");
 
 var kernel = builder.Build();
 var chat = kernel.GetRequiredService<IChatCompletionService>();
@@ -188,6 +196,32 @@ while (true)
 // ---------------------------------------------------------------------------
 // Provider configuration
 // ---------------------------------------------------------------------------
+
+static IEmbeddingService CreateEmbeddingService(IConfiguration config)
+{
+    var model = config["RAG:EmbeddingModel"];
+    var apiKey = config["OpenAI:ApiKey"];
+    var baseUrl = config["OpenAI:Endpoint"];
+
+    if (!string.IsNullOrWhiteSpace(model) &&
+        !string.IsNullOrWhiteSpace(apiKey) &&
+        !string.IsNullOrWhiteSpace(baseUrl))
+    {
+        var dims = int.TryParse(config["RAG:EmbeddingDimensions"], out var d) ? d : 1024;
+        try
+        {
+            System.Console.WriteLine($"RAG embeddings: '{model}' (API)");
+            return new OpenAIEmbeddingService(apiKey, model, baseUrl, dims);
+        }
+        catch
+        {
+            // Fall through to local embedding.
+        }
+    }
+
+    System.Console.WriteLine("RAG embeddings: local hashing (set RAG:EmbeddingModel for API embeddings)");
+    return new HashingEmbeddingService();
+}
 
 static IShipmentStore CreateShipmentStore(IConfiguration config)
 {

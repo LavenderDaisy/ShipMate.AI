@@ -4,6 +4,7 @@ using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
 using OpenAI;
 using ShipMate.AI.Console.Carriers;
+using ShipMate.AI.Console.Knowledge;
 using ShipMate.AI.Console.Plugins;
 using ShipMate.AI.Console.Printing;
 
@@ -23,6 +24,8 @@ public static class ShipMateKernelFactory
         book a shipment (create_shipment), track a shipment (track_shipment), generate a
         printable 4x6 ZPL shipping label (render_label), send a booked shipment's label to the
         label printer (print_label), and buy and print a REAL carrier label (buy_and_print_carrier_label).
+        You can also answer questions about carrier rules, restrictions, prohibited items, and
+        international shipping eligibility using search_carrier_rules.
 
         Orchestrate tools as needed to fully satisfy the request. For example, if the user
         says "find the cheapest overnight option, ship it and print the label", first call
@@ -31,6 +34,8 @@ public static class ShipMateKernelFactory
         booking, give the user the tracking number. When asked where a package is, call
         track_shipment with the tracking number. Use buy_and_print_carrier_label only when the
         user explicitly wants a real/actual carrier label rather than the demo label.
+        When the user asks whether something can be shipped or about carrier policies/
+        restrictions, call search_carrier_rules and answer based on the returned rules.
 
         Always state carrier, service, price, transit time, and any tracking number clearly.
         Ask for missing details (origin, destination, weight) only if required to proceed.
@@ -75,12 +80,18 @@ public static class ShipMateKernelFactory
             ? new EasyPostLabelService(easyPostKey)
             : null;
 
+        // --- RAG knowledge base (carrier rules) ---
+        var embeddings = CreateEmbeddingService(config);
+        var vectorSearch = new VectorSearchService(embeddings, CarrierKnowledgeBase.Documents);
+        var rewriteQueries = !bool.TryParse(config["RAG:RewriteQueries"], out var rw) || rw;
+
         builder.Plugins.AddFromObject(new RatePlugin(ratingService), "Rating");
         builder.Plugins.AddFromObject(new ShipPlugin(shippingService), "Shipping");
         builder.Plugins.AddFromObject(new TrackPlugin(shippingService), "Tracking");
         builder.Plugins.AddFromObject(new LabelPrintPlugin(labelService), "Labeling");
         builder.Plugins.AddFromObject(
             new PrintLabelPlugin(labelService, printer, labelsDir, easyPostLabel), "Printing");
+        builder.Plugins.AddFromObject(new KnowledgePlugin(vectorSearch, rewriteQueries), "Knowledge");
 
         var kernel = builder.Build();
 
@@ -174,6 +185,34 @@ public static class ShipMateKernelFactory
                 => new TcpZplPrinter(config["Printer:Host"]!, int.TryParse(config["Printer:Port"], out var p) ? p : 9100),
             _ => new NullZplPrinter()
         };
+    }
+
+    // --- RAG embedding selection ---
+    // Uses a real embedding model when RAG:EmbeddingModel is set (OpenAI-compatible
+    // /embeddings endpoint, reusing the OpenAI key/endpoint); otherwise a deterministic
+    // local hashing embedding so RAG works offline with no extra config.
+    private static IEmbeddingService CreateEmbeddingService(IConfiguration config)
+    {
+        var model = config["RAG:EmbeddingModel"];
+        var apiKey = config["OpenAI:ApiKey"];
+        var baseUrl = config["OpenAI:Endpoint"];
+
+        if (!string.IsNullOrWhiteSpace(model) &&
+            !string.IsNullOrWhiteSpace(apiKey) &&
+            !string.IsNullOrWhiteSpace(baseUrl))
+        {
+            var dims = int.TryParse(config["RAG:EmbeddingDimensions"], out var d) ? d : 1024;
+            try
+            {
+                return new OpenAIEmbeddingService(apiKey, model, baseUrl, dims);
+            }
+            catch
+            {
+                // Fall through to local embedding.
+            }
+        }
+
+        return new HashingEmbeddingService();
     }
 }
 

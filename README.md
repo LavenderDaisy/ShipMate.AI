@@ -25,8 +25,12 @@ booking, and tracking — to fulfil the request.
 - **Carrier-agnostic abstraction** — `ICarrierRateEngine` mirrors the real
   StarShip `CarrierEngine` rate-transaction dispatch pattern, so production carrier
   integrations drop in cleanly. Ships with both a live **EasyPost** engine and a mock.
+- **RAG carrier-rules Q&A** — an "agentic" retrieval tool (`search_carrier_rules`) lets the
+  model answer policy questions (hazmat, prohibited items, international eligibility)
+  grounded in a vector-searched knowledge base instead of hallucinating. The model also
+  rewrites the query into search keywords before retrieving, improving recall.
 - **Tested** — NUnit suite covers rate parsing/de-duplication, ZPL generation, rate
-  aggregation, and ZPL printing, running fully offline against captured samples.
+  aggregation, ZPL printing, and vector retrieval, running fully offline against samples.
 - **Real label printing** — sends 4x6 ZPL to a label printer via the Windows print
   spooler (raw) or TCP 9100, and can buy a real carrier label from EasyPost.
 - **Secure config** — API keys via .NET user-secrets, never committed to source.
@@ -136,6 +140,13 @@ ShipMate.AI/
 │  │  ├─ EasyPostLabelService.cs      # buy a real carrier label (ZPL) via EasyPost
 │  │  ├─ LabelModels.cs               # LabelFormat / LabelResult
 │  │  └─ LabelService.cs              # render 4x6 ZPL label from a shipment
+│  ├─ Knowledge/                      # RAG carrier-rules knowledge base
+│  │  ├─ KnowledgeModels.cs           # document / embedded doc / search result
+│  │  ├─ CarrierKnowledgeBase.cs      # seed carrier-rule documents
+│  │  ├─ IEmbeddingService.cs         # embedding contract (Strategy)
+│  │  ├─ HashingEmbeddingService.cs   # local deterministic embedding (offline)
+│  │  ├─ OpenAIEmbeddingService.cs    # real embedding via OpenAI-compatible API
+│  │  └─ VectorSearchService.cs       # cosine-similarity top-K retrieval
 │  ├─ Printing/                       # ZPL printer transports
 │  │  ├─ IZplPrinter.cs               # printer contract + PrintResult
 │  │  ├─ WindowsRawZplPrinter.cs      # raw spooler print via winspool P/Invoke
@@ -146,18 +157,20 @@ ShipMate.AI/
 │     ├─ ShipPlugin.cs                # create_shipment
 │     ├─ TrackPlugin.cs               # track_shipment
 │     ├─ LabelPrintPlugin.cs          # render_label (4x6 ZPL)
-│     └─ PrintLabelPlugin.cs          # print_label / buy_and_print_carrier_label
+│     ├─ PrintLabelPlugin.cs          # print_label / buy_and_print_carrier_label
+│     └─ KnowledgePlugin.cs           # search_carrier_rules (RAG)
 ├─ src/ShipMate.AI.Api/               # ASP.NET Core Minimal API + web chat UI
 │  ├─ Program.cs                      # /api/chat endpoint + serves chat page
 │  └─ ChatModels.cs                   # request/response types + embedded HTML
-└─ tests/ShipMate.AI.Tests/           # NUnit test suite (32 tests)
+└─ tests/ShipMate.AI.Tests/           # NUnit test suite (41 tests)
    ├─ EasyPostRateParserTests.cs      # parse / dedupe / tier mapping
    ├─ LabelServiceTests.cs            # ZPL structure + file output
    ├─ RatingServiceTests.cs           # aggregation + cheapest-first sorting
    ├─ InMemoryShipmentStoreTests.cs   # store add / lookup / upsert
    ├─ NullZplPrinterTests.cs          # no-op printer behavior
    ├─ TcpZplPrinterTests.cs           # real loopback socket + failure path
-   └─ PrintLabelPluginTests.cs        # print orchestration via fake printer
+   ├─ PrintLabelPluginTests.cs        # print orchestration via fake printer
+   └─ RagKnowledgeTests.cs            # embedding / cosine similarity / retrieval
 ```
 
 ---
@@ -170,13 +183,14 @@ ShipMate.AI/
 | AI orchestration | Microsoft Semantic Kernel |
 | LLM backends | Azure OpenAI · OpenAI · OpenAI-compatible (DeepSeek/Qwen/Zhipu) · Ollama |
 | Carrier rates | EasyPost API (live, multi-carrier) with mock fallback |
+| Knowledge (RAG) | Vector embeddings + cosine-similarity retrieval (local or API) |
 | Label printing | ZPL via Windows print spooler (raw) or TCP 9100 |
 | Persistence | MongoDB Atlas (durable) with in-memory fallback |
 | Web UI | ASP.NET Core Minimal API + embedded chat page |
 | Observability | OpenTelemetry tracing (console exporter; OTLP-ready) |
-| Capability | LLM function calling, multi-step tool orchestration |
+| Capability | LLM function calling, multi-step tool orchestration, RAG |
 | Config / secrets | Microsoft.Extensions.Configuration + user-secrets |
-| Testing | NUnit 4 (32 tests, no API key required) |
+| Testing | NUnit 4 (41 tests, no API key required) |
 
 ---
 
@@ -184,7 +198,7 @@ ShipMate.AI/
 
 | Pattern | Where | Why |
 |---|---|---|
-| **Strategy** | `ICarrierRateEngine` → `MockCarrierRateEngine` / `EasyPostRateEngine` | Swap mock vs. live carrier rating at runtime via config; the AI layer never changes. |
+| **Strategy** | `ICarrierRateEngine` (mock/EasyPost) · `IEmbeddingService` (local/API) | Swap implementations at runtime via config; the AI/RAG layer never changes. |
 | **Command** | `Plugins/*Plugin.cs` (`[KernelFunction]`) | Each carrier operation is encapsulated as a self-describing tool the LLM can invoke. |
 | **Facade** | `RatingService`, `ShippingService` | A single entry point hides fan-out across carriers and result aggregation/sorting. |
 | **Repository** | `IShipmentStore` → `InMemoryShipmentStore` / `MongoShipmentStore` | Abstracts shipment persistence; swap in-memory vs MongoDB via config. |
@@ -275,6 +289,28 @@ dotnet user-secrets set "Mongo:Database" "shipmate"
 Without a connection string the app uses an in-memory store. If MongoDB is unreachable
 at startup it falls back to in-memory automatically.
 
+### Carrier-rules Q&A (RAG)
+
+Ask policy questions like *"can I ship lithium batteries by air?"* or *"what do I need to
+ship to China?"*. The model calls the `search_carrier_rules` tool, which embeds the query,
+retrieves the most relevant rule snippets from a knowledge base by cosine similarity, and
+returns them so the answer is grounded in real policy text rather than hallucinated.
+
+This is **agentic RAG**: the model decides *when* to retrieve (unlike a fixed pipeline that
+always retrieves). By default it also rewrites the query first — expanding the user's
+phrasing into search keywords (e.g. *"power bank"* → *"lithium battery power bank"*) so
+retrieval recall improves, especially with the lexical local embedding. Disable with
+`RAG:RewriteQueries=false`.
+
+Retrieval works fully offline by default using a deterministic local embedding. To use a
+real semantic embedding model (OpenAI-compatible `/embeddings`, e.g. Zhipu `embedding-3`):
+
+```powershell
+cd src/ShipMate.AI.Console
+dotnet user-secrets set "RAG:EmbeddingModel" "embedding-3"
+# reuses OpenAI:ApiKey / OpenAI:Endpoint; optional RAG:EmbeddingDimensions
+```
+
 ### Observability (OpenTelemetry)
 
 The web API is instrumented with OpenTelemetry tracing. Each `POST /api/chat` produces a
@@ -364,7 +400,8 @@ The NUnit suite runs fully offline — no API key or network access required. Ea
 response mapping is tested against captured JSON samples by isolating the pure parsing
 logic (`EasyPostRateParser`) from the HTTP-bound engine. Printing is verified with a fake
 printer and a real loopback socket (`TcpZplPrinter`), so no physical printer is needed.
-The shipment store contract is tested via `InMemoryShipmentStoreTests`.
+The shipment store contract is tested via `InMemoryShipmentStoreTests`, and RAG retrieval
+(embedding determinism, cosine similarity, relevance) via `RagKnowledgeTests`.
 
 ## Roadmap
 
@@ -372,8 +409,8 @@ The shipment store contract is tested via `InMemoryShipmentStoreTests`.
 - [x] `LabelPrintPlugin` — generate 4x6 ZPL shipping labels
 - [x] ZPL printing (Windows spooler / TCP 9100) + real EasyPost label buying
 - [x] MongoDB persistence for shipments and tracking
-- [x] Unit test suite (NUnit, 32 tests)
+- [x] Unit test suite (NUnit, 41 tests)
 - [x] Minimal API + web chat UI
 - [x] OpenTelemetry tracing of tool-call chains
-- [ ] RAG knowledge base for carrier rules (prohibited items, international eligibility)
+- [x] RAG knowledge base for carrier rules (prohibited items, international eligibility)
 ```
