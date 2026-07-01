@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
+using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using ShipMate.AI.Api;
 using ShipMate.AI.Console;
@@ -21,6 +22,13 @@ builder.Configuration
     .AddUserSecrets<Program>(optional: true)
     .AddEnvironmentVariables();
 
+// Enable Semantic Kernel's GenAI OpenTelemetry diagnostics BEFORE the kernel is built,
+// so LLM calls, token usage, prompts, and tool invocations are emitted as spans that
+// Langfuse can ingest. IncludeSensitive controls whether prompt/completion text is
+// captured (defaults to true so the demo shows the full conversation in Langfuse).
+var includeSensitive = builder.Configuration.GetValue("Langfuse:IncludeSensitive", true);
+LangfuseTracing.EnableSemanticKernelDiagnostics(includeSensitive);
+
 // Build the kernel once and register it as a singleton. Per-request chat history is
 // kept in a concurrent dictionary keyed by session id.
 ShipMateKernel shipMate;
@@ -39,14 +47,31 @@ builder.Services.AddSingleton(shipMate.Settings);
 builder.Services.AddCors(o => o.AddDefaultPolicy(b => b.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
 // --- OpenTelemetry tracing -------------------------------------------------
-// Collects spans from ShipMateTelemetry.ActivitySource and the ASP.NET Core HTTP
-// pipeline, then exports them to the console (for demo visibility). In production
-// you'd swap the console exporter for an OTLP exporter pointing at Jaeger/Tempo/etc.
+// Collects spans from ShipMateTelemetry.ActivitySource, Semantic Kernel's GenAI
+// diagnostics, and the ASP.NET Core HTTP pipeline. Exports to the console (for demo
+// visibility) and, when configured, to Langfuse over OTLP for LLM-specific
+// observability (token cost, prompts, tool-call traces).
 builder.Services.AddOpenTelemetry()
-    .WithTracing(tp => tp
-        .AddSource(ShipMateTelemetry.ActivitySource.Name)
-        .AddAspNetCoreInstrumentation()
-        .AddConsoleExporter());
+    .WithTracing(tp =>
+    {
+        tp.SetResourceBuilder(
+                ResourceBuilder.CreateDefault().AddService("ShipMate.AI"))
+            .AddSource(ShipMateTelemetry.ActivitySource.Name)
+            .AddSource("Microsoft.SemanticKernel*")
+            .AddAspNetCoreInstrumentation()
+            .AddConsoleExporter()
+            .AddLangfuseExporter(builder.Configuration);
+    });
+
+if (LangfuseTracing.IsConfigured(builder.Configuration))
+{
+    Console.WriteLine(
+        $"Langfuse tracing enabled -> {builder.Configuration["Langfuse:Host"] ?? "https://cloud.langfuse.com"}");
+}
+else
+{
+    Console.WriteLine("Langfuse tracing disabled (set Langfuse:PublicKey / Langfuse:SecretKey to enable).");
+}
 
 var app = builder.Build();
 app.UseCors();
@@ -97,7 +122,5 @@ app.MapDelete("/api/chat/{sessionId}", (string sessionId) =>
 
 // Serve the chat UI.
 app.MapGet("/", () => Results.Content(ChatPage.Html, "text/html", System.Text.Encoding.UTF8));
-
-app.Run();
 
 app.Run();

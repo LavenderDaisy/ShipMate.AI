@@ -157,7 +157,12 @@ public static class ShipMateKernelFactory
 
     // --- Store / printer selection ---
 
-    private static IShipmentStore CreateShipmentStore(IConfiguration config)
+    /// <summary>
+    /// Creates the shipment store from configuration (MongoDB when configured, otherwise
+    /// in-memory). Exposed so hosts can inspect stored shipments (e.g. the console
+    /// <c>--dump</c> command) without rebuilding the whole kernel.
+    /// </summary>
+    public static IShipmentStore CreateShipmentStore(IConfiguration config)
     {
         var connectionString = config["Mongo:ConnectionString"];
         if (string.IsNullOrWhiteSpace(connectionString))
