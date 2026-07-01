@@ -52,8 +52,9 @@ labels/
 ## Node.js (if any tooling is added later)
 node_modules/
 
-## Personal interview / study notes (kept local, not published)
+## Personal interview / study notes and internal planning (kept local, not published)
 docs/interview-notes.md
+docs/rewrite-plan.md
 
 ## Misc
 *.txt

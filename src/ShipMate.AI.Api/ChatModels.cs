@@ -1,12 +1,13 @@
 using Microsoft.SemanticKernel.ChatCompletion;
+using ShipMate.AI.Console;
 
 namespace ShipMate.AI.Api;
 
 /// <summary>Request body for POST /api/chat.</summary>
 public sealed record ChatRequest(string? SessionId, string? Message);
 
-/// <summary>Response body for POST /api/chat.</summary>
-public sealed record ChatResponse(string Reply);
+/// <summary>Response body for POST /api/chat, including the ReAct tool-call steps.</summary>
+public sealed record ChatResponse(string Reply, IReadOnlyList<ReActStep> Steps);
 
 /// <summary>
 /// In-memory per-session chat history store. ConcurrentDictionary is fine for a demo;
@@ -41,6 +42,13 @@ public static class ChatPage
   .bot { background:var(--card); align-self:flex-start; border:1px solid #2a2d3a; }
   .bot.error { border-color:#e74c3c; color:#e74c3c; }
   .typing { color:var(--muted); font-style:italic; }
+  .react { align-self:flex-start; max-width:720px; background:#12141c; border:1px solid #2a2d3a; border-left:3px solid var(--accent); border-radius:10px; padding:10px 14px; font-size:13px; }
+  .react summary { cursor:pointer; color:var(--accent); font-weight:600; }
+  .react-step { margin:10px 0 0; padding:8px 10px; background:#0f1117; border-radius:8px; }
+  .react-act { color:var(--text); }
+  .react-dur { color:var(--muted); font-size:12px; margin-left:6px; }
+  .react-args { color:var(--muted); margin:4px 0; font-family:ui-monospace,monospace; font-size:12px; word-break:break-all; }
+  .react-obs { color:#7fd18a; font-size:12px; word-break:break-word; }
   #input-bar { background:var(--card); border-top:1px solid #2a2d3a; padding:16px 24px; display:flex; gap:12px; }
   #msg-input { flex:1; background:#0f1117; border:1px solid #2a2d3a; border-radius:8px; padding:12px 16px; color:var(--text); font-size:15px; outline:none; }
   #msg-input:focus { border-color:var(--accent); }
@@ -85,6 +93,35 @@ function add(text, cls) {
 
 function fill(b) { input.value = b.textContent; input.focus(); }
 
+// Renders the ReAct tool-call chain (think → act → observe) as a collapsible panel.
+function addSteps(steps) {
+  if (!steps || steps.length === 0) return;
+  const wrap = document.createElement('details');
+  wrap.className = 'react';
+  wrap.open = true;
+  const sum = document.createElement('summary');
+  sum.textContent = '🧠 ReAct: ' + steps.length + ' tool call' + (steps.length > 1 ? 's' : '');
+  wrap.appendChild(sum);
+  steps.forEach((s, i) => {
+    const step = document.createElement('div');
+    step.className = 'react-step';
+    step.innerHTML =
+      '<div class="react-act">🔧 <b>' + (i + 1) + '. ' + s.tool + '</b> '
+        + '<span class="react-dur">' + s.durationMs + ' ms</span></div>'
+      + '<div class="react-args">args: ' + escapeHtml(s.arguments) + '</div>'
+      + '<div class="react-obs">👀 ' + escapeHtml(s.result) + '</div>';
+    wrap.appendChild(step);
+  });
+  chat.appendChild(wrap);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function escapeHtml(t) {
+  const d = document.createElement('div');
+  d.textContent = t || '';
+  return d.innerHTML;
+}
+
 async function send() {
   const msg = input.value.trim();
   if (!msg) return;
@@ -100,6 +137,7 @@ async function send() {
     });
     const data = await res.json();
     typing.remove();
+    addSteps(data.steps);
     add(data.reply, data.reply.startsWith('[error]') ? 'bot error' : 'bot');
   } catch(e) {
     typing.remove();

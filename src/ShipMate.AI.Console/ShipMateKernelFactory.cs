@@ -1,5 +1,6 @@
 using System.ClientModel;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
 using OpenAI;
@@ -92,6 +93,9 @@ public static class ShipMateKernelFactory
         builder.Plugins.AddFromObject(
             new PrintLabelPlugin(labelService, printer, labelsDir, easyPostLabel), "Printing");
         builder.Plugins.AddFromObject(new KnowledgePlugin(vectorSearch, rewriteQueries), "Knowledge");
+
+        // Capture each tool invocation as a ReAct step (think → act → observe) for the UI.
+        builder.Services.AddSingleton<IFunctionInvocationFilter, ReActCaptureFilter>();
 
         var kernel = builder.Build();
 

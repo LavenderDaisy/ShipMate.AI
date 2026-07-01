@@ -18,6 +18,9 @@ booking, and tracking — to fulfil the request.
   self-describing tools via `[KernelFunction]` + `[Description]` attributes.
 - **Multi-step agent orchestration** — a single request can trigger a chain of tool
   calls (rate → ship → track) that the model plans on its own.
+- **ReAct reasoning trace** — every tool the model invokes is captured (via a Semantic
+  Kernel function-invocation filter) and shown in the web UI as a think → act → observe
+  chain, so you can see the agent's actual reasoning and tool calls.
 - **Cross-tool state** — a tracking number minted by `create_shipment` is resolvable by
   `track_shipment` later in the session.
 - **Pluggable LLM backend** — Azure OpenAI, OpenAI, any OpenAI-compatible provider
@@ -124,6 +127,7 @@ ShipMate.AI/
 ├─ src/ShipMate.AI.Console/           # console host + shared domain logic
 │  ├─ Program.cs                      # console host: config, chat loop, --dump
 │  ├─ ShipMateKernelFactory.cs        # shared kernel/service assembly (used by both hosts)
+│  ├─ ReActCapture.cs                 # ReAct step model + function-invocation filter
 │  ├─ appsettings.json                # Provider + backend settings
 │  ├─ Carriers/                       # carrier integration layer (swappable)
 │  │  ├─ ICarrierRateEngine.cs        # rate-engine contract (mirrors CarrierEngine)
@@ -205,6 +209,7 @@ ShipMate.AI/
 | **Adapter** | `EasyPostRateParser` (JSON → `RateQuote`, `MapServiceLevel`) | Translates EasyPost's external shape into the internal rate model. |
 | **Humble Object** | `EasyPostRateParser` split from `EasyPostRateEngine` | Pure parsing logic is isolated from HTTP so it is unit-testable without network/keys. |
 | **Null Object** | `NullZplPrinter` | Stands in when no printer is configured, so callers never branch on null. |
+| **Interceptor / Filter** | `ReActCaptureFilter` (`IFunctionInvocationFilter`) | Captures every tool call for the ReAct trace without modifying any plugin (AOP). |
 | **Factory** | `ShipMateKernelFactory` | Assembles the kernel + all services from config; shared by console and web API hosts. |
 | **Dependency Injection** | constructor injection wired in `Program.cs` | Services/plugins receive collaborators, enabling stubbing in tests. |
 
@@ -275,6 +280,13 @@ Open `http://localhost:5099` in a browser. The chat page talks to `POST /api/cha
 which uses the same Semantic Kernel, carrier, shipping, label, and printing layers as
 the console host (assembled by the shared `ShipMateKernelFactory`). Each browser session
 gets its own chat history. Quick-example buttons are provided.
+
+The response also carries the **ReAct trace** — the ordered list of tools the model
+invoked, with the arguments it chose and the result it observed — rendered in the UI as a
+collapsible "🧠 ReAct" panel. For example, *"find the cheapest ground, ship it and print
+the label"* shows `get_shipping_rates → create_shipment → render_label`. This is captured
+by a Semantic Kernel `IFunctionInvocationFilter` (`ReActCaptureFilter`) that intercepts
+every tool call without touching any plugin code; per-request isolation uses `AsyncLocal`.
 
 ### MongoDB persistence (optional)
 
@@ -413,4 +425,5 @@ The shipment store contract is tested via `InMemoryShipmentStoreTests`, and RAG 
 - [x] Minimal API + web chat UI
 - [x] OpenTelemetry tracing of tool-call chains
 - [x] RAG knowledge base for carrier rules (prohibited items, international eligibility)
+- [x] ReAct reasoning-trace visualization in the web UI
 ```

@@ -96,6 +96,9 @@ app.MapPost("/api/chat", async (ChatRequest req, Kernel kernel, OpenAIPromptExec
 
     history.AddUserMessage(req.Message);
 
+    // Begin capturing the ReAct tool-call chain for this request (think → act → observe).
+    var steps = ReActStepCollector.BeginScope();
+
     var chat = kernel.GetRequiredService<IChatCompletionService>();
     try
     {
@@ -103,13 +106,18 @@ app.MapPost("/api/chat", async (ChatRequest req, Kernel kernel, OpenAIPromptExec
         var reply = response.Content ?? "(no response)";
         history.AddAssistantMessage(reply);
         span?.SetTag("chat.reply_length", reply.Length);
+        span?.SetTag("react.step_count", steps.Count);
         span?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
-        return Results.Ok(new ChatResponse(reply));
+        return Results.Ok(new ChatResponse(reply, steps.ToArray()));
     }
     catch (Exception ex)
     {
         span?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, ex.Message);
-        return Results.Ok(new ChatResponse($"[error] {ex.Message}"));
+        return Results.Ok(new ChatResponse($"[error] {ex.Message}", steps.ToArray()));
+    }
+    finally
+    {
+        ReActStepCollector.EndScope();
     }
 });
 
