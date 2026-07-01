@@ -173,6 +173,7 @@ ShipMate.AI/
 | Label printing | ZPL via Windows print spooler (raw) or TCP 9100 |
 | Persistence | MongoDB Atlas (durable) with in-memory fallback |
 | Web UI | ASP.NET Core Minimal API + embedded chat page |
+| Observability | OpenTelemetry tracing (console exporter; OTLP-ready) |
 | Capability | LLM function calling, multi-step tool orchestration |
 | Config / secrets | Microsoft.Extensions.Configuration + user-secrets |
 | Testing | NUnit 4 (32 tests, no API key required) |
@@ -274,6 +275,25 @@ dotnet user-secrets set "Mongo:Database" "shipmate"
 Without a connection string the app uses an in-memory store. If MongoDB is unreachable
 at startup it falls back to in-memory automatically.
 
+### Observability (OpenTelemetry)
+
+The web API is instrumented with OpenTelemetry tracing. Each `POST /api/chat` produces a
+trace tree: the ASP.NET Core HTTP span, a `chat.request` span, and child spans for each
+tool the LLM invokes (`tool.get_shipping_rates`, `tool.create_shipment`), tagged with
+context like origin/destination, quote count, and tracking number.
+
+Spans are printed to the console via the console exporter, so you can see them in the API
+terminal. Example trace for a rate lookup:
+
+```
+POST /api/chat                    ← ASP.NET Core span
+  └─ chat.request                 ← root span (session.id, message/reply length)
+       └─ tool.get_shipping_rates ← tool span (rate.origin_zip, rate.quote_count=3, duration)
+```
+
+This makes it easy to see where time goes (LLM call vs. carrier API). For production,
+swap the console exporter for an OTLP exporter pointing at Jaeger, Tempo, or a collector.
+
 ### Label preview
 
 The `render_label` tool emits standard 4x6 inch ZPL at 203 dpi with a Code128 tracking
@@ -354,6 +374,6 @@ The shipment store contract is tested via `InMemoryShipmentStoreTests`.
 - [x] MongoDB persistence for shipments and tracking
 - [x] Unit test suite (NUnit, 32 tests)
 - [x] Minimal API + web chat UI
+- [x] OpenTelemetry tracing of tool-call chains
 - [ ] RAG knowledge base for carrier rules (prohibited items, international eligibility)
-- [ ] OpenTelemetry tracing of token usage and tool-call chains
 ```

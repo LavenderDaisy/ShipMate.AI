@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Text;
 using Microsoft.SemanticKernel;
 using ShipMate.AI.Console.Carriers;
@@ -45,7 +46,14 @@ public sealed class RatePlugin
             Residential = residential
         };
 
+        using var span = ShipMateTelemetry.StartSpan("tool.get_shipping_rates");
+        span?.SetTag("rate.origin_zip", originZip);
+        span?.SetTag("rate.destination_zip", destinationZip);
+        span?.SetTag("rate.weight_lbs", weightLbs);
+        span?.SetTag("rate.service_level", serviceLevel ?? "all");
+
         var quotes = _ratingService.GetAllRates(request);
+        span?.SetTag("rate.quote_count", quotes.Count);
 
         // When the user pinned a service level, only return matching quotes.
         if (serviceLevel is not null && Enum.TryParse<ServiceLevel>(serviceLevel, true, out var pinned))

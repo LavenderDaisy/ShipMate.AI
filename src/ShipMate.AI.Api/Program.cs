@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
+using OpenTelemetry.Trace;
 using ShipMate.AI.Api;
 using ShipMate.AI.Console;
 
@@ -37,6 +38,16 @@ builder.Services.AddSingleton(shipMate.Kernel);
 builder.Services.AddSingleton(shipMate.Settings);
 builder.Services.AddCors(o => o.AddDefaultPolicy(b => b.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
+// --- OpenTelemetry tracing -------------------------------------------------
+// Collects spans from ShipMateTelemetry.ActivitySource and the ASP.NET Core HTTP
+// pipeline, then exports them to the console (for demo visibility). In production
+// you'd swap the console exporter for an OTLP exporter pointing at Jaeger/Tempo/etc.
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tp => tp
+        .AddSource(ShipMateTelemetry.ActivitySource.Name)
+        .AddAspNetCoreInstrumentation()
+        .AddConsoleExporter());
+
 var app = builder.Build();
 app.UseCors();
 
@@ -49,6 +60,12 @@ app.MapPost("/api/chat", async (ChatRequest req, Kernel kernel, OpenAIPromptExec
         return Results.BadRequest(new { error = "message is required" });
 
     var sessionId = string.IsNullOrWhiteSpace(req.SessionId) ? "default" : req.SessionId;
+
+    // Root span for the entire chat request. Child spans (tool calls) will nest under it.
+    using var span = ShipMateTelemetry.StartSpan("chat.request");
+    span?.SetTag("session.id", sessionId);
+    span?.SetTag("chat.message_length", req.Message.Length);
+
     var history = ChatSessionStore.Histories.GetOrAdd(sessionId, _ =>
         new ChatHistory(ShipMateKernelFactory.SystemPrompt));
 
@@ -60,10 +77,13 @@ app.MapPost("/api/chat", async (ChatRequest req, Kernel kernel, OpenAIPromptExec
         var response = await chat.GetChatMessageContentAsync(history, settings, kernel);
         var reply = response.Content ?? "(no response)";
         history.AddAssistantMessage(reply);
+        span?.SetTag("chat.reply_length", reply.Length);
+        span?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
         return Results.Ok(new ChatResponse(reply));
     }
     catch (Exception ex)
     {
+        span?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, ex.Message);
         return Results.Ok(new ChatResponse($"[error] {ex.Message}"));
     }
 });

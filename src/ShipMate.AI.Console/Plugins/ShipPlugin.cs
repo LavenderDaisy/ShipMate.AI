@@ -52,6 +52,11 @@ public sealed class ShipPlugin
             Residential = residential
         });
 
+        using var span = ShipMateTelemetry.StartSpan("tool.create_shipment");
+        span?.SetTag("ship.carrier", result.Carrier);
+        span?.SetTag("ship.tracking_number", result.TrackingNumber);
+        span?.SetTag("ship.total_charge", (double)result.TotalCharge);
+
         return $"Shipment booked with {result.Carrier} {result.ServiceLevel}. " +
                $"Tracking number: {result.TrackingNumber}. " +
                $"Charge: {result.TotalCharge:C} {result.Currency}. " +
